@@ -69,6 +69,8 @@ def main() -> None:
     obs = env.step(SocialAction(brand_id=0, content_type="reel", post_time_slot=5))
     assert obs.current_step == 1
     assert obs.reward is not None
+    assert hasattr(obs, "market_trend")
+    assert hasattr(obs, "total_conversions")
     print(f"  Step OK: reward={obs.reward:.4f}, done={obs.done}, step={obs.current_step}")
 
     print("\nTesting invalid actions consume turns...")
@@ -133,6 +135,27 @@ def main() -> None:
         f" focused={focused_obs.metadata['grader_score']:.4f}"
     )
 
+    print("\nTesting advanced dynamics (conversions + compliance)...")
+    advanced_env = SocialMediaOptimizerEnv(task_id=3, seed=7)
+    advanced_obs = advanced_env.reset(task_id=3, seed=7)
+    while not advanced_obs.done:
+        advanced_obs = advanced_env.step(
+            SocialAction(
+                brand_id=advanced_obs.current_step % 5,
+                content_type="reel",
+                post_time_slot=5,
+                budget_fractions=[0.2, 0.2, 0.2, 0.2, 0.2],
+            )
+        )
+
+    assert advanced_obs.metadata["episode_summary"]["total_conversions"] >= 0.0
+    assert advanced_obs.metadata["episode_summary"]["total_policy_violations"] >= 0
+    print(
+        "  Advanced dynamics OK:"
+        f" conversions={advanced_obs.metadata['episode_summary']['total_conversions']:.4f}"
+        f" policy_violations={advanced_obs.metadata['episode_summary']['total_policy_violations']}"
+    )
+
     print("\nTesting reproducibility...")
     env = SocialMediaOptimizerEnv(task_id=1, seed=100)
     obs1 = env.reset(task_id=1, seed=100)
@@ -146,19 +169,23 @@ def main() -> None:
 
     if data_root.exists():
         print("\nTesting SQLite datasource mode...")
-        ensure_sqlite_seeded(sqlite_path, data_root)
-        db_summary = summarize_sqlite(sqlite_path)
+        sqlite_mode_db = sqlite_path.with_name("social_media_sqlite_mode.db")
+        if sqlite_mode_db.exists():
+            sqlite_mode_db.unlink()
+        os.environ["SOCIAL_DATA_SOURCE"] = "sqlite"
+        ensure_sqlite_seeded(sqlite_mode_db, data_root)
+        db_summary = summarize_sqlite(sqlite_mode_db)
         assert db_summary["exists"] is True
         assert db_summary["channel_profiles"] >= 5
 
         sqlite_env = SocialMediaOptimizerEnv(task_id=3, seed=42)
-        sqlite_obs = sqlite_env.reset(task_id=3, seed=42)
+        sqlite_obs = sqlite_env.reset(task_id=3, seed=42, sqlite_path=str(sqlite_mode_db))
         platforms = [brand.platform for brand in sqlite_obs.brands]
         assert sqlite_obs.metadata.get("data_mode") == "sqlite"
         assert Path(sqlite_obs.metadata.get("sqlite_path", "")).exists()
         assert "instagram" in platforms and "linkedin" in platforms
         print(
-            f"  SQLite datasource OK: db={sqlite_path} "
+            f"  SQLite datasource OK: db={sqlite_mode_db} "
             f"profiles={db_summary['channel_profiles']} raw_posts={db_summary['raw_posts']} "
             f"platforms={platforms}"
         )

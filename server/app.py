@@ -1,6 +1,7 @@
 """FastAPI application for the Social Media Optimizer Environment."""
 
 import os
+from pathlib import Path
 
 from openenv.core.env_server import create_app
 
@@ -17,6 +18,12 @@ except ImportError as e:
 # OpenEnv expects ENABLE_WEB_INTERFACE, not OPENENV_ENABLE_WEB_INTERFACE.
 # Default to enabling the UI so the /web endpoint is available locally and in Spaces.
 os.environ.setdefault("ENABLE_WEB_INTERFACE", "true")
+
+# OpenEnv web interface looks for README at /app/README.md by default.
+# Explicitly provide the project README path so /web renders docs in local and Docker runs.
+readme_path = Path(__file__).resolve().parents[1] / "README.md"
+if readme_path.exists():
+    os.environ.setdefault("ENV_README_PATH", str(readme_path))
 
 # Create the FastAPI app
 app = create_app(

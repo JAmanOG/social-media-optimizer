@@ -7,6 +7,7 @@ The environment models three progressively harder social-media planning tasks.
 
 from __future__ import annotations
 
+import math
 import os
 import random
 import uuid
@@ -114,6 +115,13 @@ class SocialMediaOptimizerEnv(Environment):
         self._episode_budget_total = self._daily_budget * self._max_steps
         self._engagement_log: List[Dict[str, Any]] = []
         self._portfolio_paid_lift_total = 0.0
+        self._total_policy_violations = 0
+        self._total_conversions = 0.0
+        self._shock_platform = self._rng.choice(["instagram", "facebook", "linkedin", "youtube", "x"])
+        start_min = max(2, self._max_steps // 4)
+        start_max = max(start_min + 1, self._max_steps - 3)
+        self._shock_start = self._rng.randint(start_min, start_max)
+        self._shock_duration = self._rng.randint(2, 4)
 
         for brand in self._brands:
             brand["engagement_history"] = []
@@ -126,6 +134,12 @@ class SocialMediaOptimizerEnv(Environment):
             brand["budget_spent"] = 0.0
             brand["cumulative_budget_spent"] = 0.0
             brand["budget_remaining"] = 0.0
+            brand["fatigue_score"] = 0.0
+            brand["trend_momentum"] = 0.0
+            brand["risk_level"] = 0.0
+            brand["policy_violations"] = 0
+            brand["cumulative_conversions"] = 0.0
+            brand["pending_conversion_queue"] = []
 
         self._state = SocialState(
             episode_id=str(uuid.uuid4()),
@@ -134,6 +148,8 @@ class SocialMediaOptimizerEnv(Environment):
             total_reward=0.0,
             brand_configs=[{k: v for k, v in brand.items()} for brand in self._brands],
             engagement_log=[],
+            total_policy_violations=0,
+            total_conversions=0.0,
         )
 
         return self._make_observation()
@@ -147,6 +163,11 @@ class SocialMediaOptimizerEnv(Environment):
         brand = self._brands[action.brand_id]
         day_of_week = self._current_step % 7
         budget_fractions = self._normalized_budget_fractions(action)
+        market_trend = self._market_trend_for_step(self._current_step)
+        shock_platform = self._active_shock_platform(self._current_step)
+
+        realized_conversions = self._apply_conversion_pipeline()
+        self._total_conversions += realized_conversions
 
         if self._task_id == 3:
             self._apply_budget_allocation(budget_fractions)
@@ -178,6 +199,14 @@ class SocialMediaOptimizerEnv(Environment):
             prior_average_engagement=prior_average_engagement,
             rng=self._rng,
         )
+        shock_mult = self._shock_penalty_multiplier(brand.get("platform", ""), shock_platform)
+        trend_mult = 1.0 + 0.20 * market_trend
+        engagement = max(0.0, min(1.0, engagement * shock_mult * trend_mult))
+
+        policy_risk, policy_violation = self._policy_risk(brand, action)
+        if policy_violation:
+            brand["policy_violations"] += 1
+            self._total_policy_violations += 1
 
         brand["engagement_history"].append(round(engagement, 4))
         brand["recent_content_types"].append(action.content_type)
@@ -187,12 +216,26 @@ class SocialMediaOptimizerEnv(Environment):
         brand["content_mix"][action.content_type] += 1
         brand["total_posts"] += 1
         brand["last_post_step"] = self._current_step
+        brand["fatigue_score"] = self._fatigue_score(brand)
+        brand["risk_level"] = policy_risk
+
+        expected_conversion = self._queue_future_conversions(
+            brand=brand,
+            engagement=engagement,
+            budget_fraction=budget_fractions[action.brand_id],
+            market_trend=market_trend,
+        )
+        brand["trend_momentum"] = round(market_trend, 4)
 
         reward = self._compute_reward(
             engagement=engagement,
             action=action,
             portfolio_paid_lift=portfolio_paid_lift,
             budget_fractions=budget_fractions,
+            realized_conversions=realized_conversions,
+            expected_conversion=expected_conversion,
+            policy_violation=policy_violation,
+            market_trend=market_trend,
         )
         self._total_reward += reward
 
@@ -205,6 +248,12 @@ class SocialMediaOptimizerEnv(Environment):
             "engagement": round(engagement, 4),
             "reward": round(reward, 4),
             "portfolio_paid_lift": round(portfolio_paid_lift, 4),
+            "realized_conversions": round(realized_conversions, 4),
+            "expected_conversion": round(expected_conversion, 4),
+            "policy_violation": policy_violation,
+            "policy_risk": round(policy_risk, 4),
+            "market_trend": round(market_trend, 4),
+            "shock_platform": shock_platform,
             "budget_fractions": [round(fraction, 4) for fraction in budget_fractions],
             "invalid_action": False,
         }
@@ -338,10 +387,18 @@ class SocialMediaOptimizerEnv(Environment):
         action: SocialAction,
         portfolio_paid_lift: float,
         budget_fractions: List[float],
+        realized_conversions: float,
+        expected_conversion: float,
+        policy_violation: bool,
+        market_trend: float,
     ) -> float:
         """Compute a dense per-step reward that matches the task objective."""
+        conversion_component = 0.55 * realized_conversions + 0.10 * expected_conversion
+        compliance_penalty = 0.25 if policy_violation else 0.0
+        trend_alignment_bonus = 0.03 if market_trend > 0 else 0.0
+
         if self._task_id == 1:
-            return engagement
+            return max(-1.0, engagement + conversion_component - compliance_penalty + trend_alignment_bonus)
 
         if self._task_id == 2:
             brand = self._brands[action.brand_id]
@@ -357,7 +414,16 @@ class SocialMediaOptimizerEnv(Environment):
             )
             coverage_bonus = 0.05 if pre_action_counts[action.brand_id] == min_posts else 0.0
             base = engagement * (0.75 + 0.25 * follower_weight * len(self._brands))
-            return max(-1.0, base + coverage_bonus - focus_penalty - neglect_penalty)
+            return max(
+                -1.0,
+                base
+                + conversion_component
+                + coverage_bonus
+                + trend_alignment_bonus
+                - focus_penalty
+                - neglect_penalty
+                - compliance_penalty,
+            )
 
         if self._task_id == 3:
             hhi = sum(fraction * fraction for fraction in budget_fractions)
@@ -380,12 +446,14 @@ class SocialMediaOptimizerEnv(Environment):
                 -1.0,
                 organic_component
                 + portfolio_component
+                + conversion_component
                 - diversification_penalty
                 - neglected_budget_penalty
                 - organic_neglect_penalty,
+                - compliance_penalty
             )
 
-        return engagement
+        return max(-1.0, engagement + conversion_component - compliance_penalty)
 
     def _compute_grader_score(self) -> float:
         """Compute the final grader score in the `[0, 1]` range."""
@@ -394,7 +462,9 @@ class SocialMediaOptimizerEnv(Environment):
                 log["engagement"] for log in self._engagement_log if not log.get("invalid_action")
             ]
             avg = sum(engagements) / max(len(engagements), 1)
-            return min(1.0, avg / 0.85)
+            conversion_score = min(1.0, self._total_conversions / max(self._max_steps * 0.20, 1.0))
+            safety_score = 1.0 - min(1.0, self._total_policy_violations / max(self._max_steps * 0.25, 1.0))
+            return min(1.0, 0.65 * (avg / 0.85) + 0.20 * conversion_score + 0.15 * safety_score)
 
         if self._task_id == 2:
             per_brand_avg = []
@@ -405,15 +475,21 @@ class SocialMediaOptimizerEnv(Environment):
             post_counts = self._post_counts()
             target_posts = self._task["target_posts_per_brand"]
             engagement_score = min(1.0, (sum(per_brand_avg) / len(per_brand_avg)) / 0.75)
+            conversion_score = min(1.0, self._total_conversions / max(self._max_steps * 0.25, 1.0))
             coverage_score = sum(
                 min(count / max(target_posts, 1), 1.0) for count in post_counts
             ) / len(post_counts)
             balance_score = 1.0 - (
                 (max(post_counts) - min(post_counts)) / max(max(post_counts), 1)
             )
+            safety_score = 1.0 - min(1.0, self._total_policy_violations / max(self._max_steps * 0.20, 1.0))
             return min(
                 1.0,
-                0.55 * engagement_score + 0.30 * coverage_score + 0.15 * balance_score,
+                0.40 * engagement_score
+                + 0.20 * conversion_score
+                + 0.20 * coverage_score
+                + 0.10 * balance_score
+                + 0.10 * safety_score,
             )
 
         if self._task_id == 3:
@@ -425,6 +501,7 @@ class SocialMediaOptimizerEnv(Environment):
                 1.0,
                 self._portfolio_paid_lift_total / max(self._max_steps * 0.30, 1.0),
             )
+            conversion_score = min(1.0, self._total_conversions / max(self._max_steps * 0.30, 1.0))
 
             budget_days = [0] * len(self._brands)
             diversification_scores = []
@@ -468,8 +545,9 @@ class SocialMediaOptimizerEnv(Environment):
 
             return min(
                 1.0,
-                0.30 * organic_score
-                + 0.20 * paid_score
+                0.22 * organic_score
+                + 0.16 * paid_score
+                + 0.18 * conversion_score
                 + 0.15 * budget_coverage_score
                 + 0.10 * diversification_score
                 + 0.15 * organic_coverage_score
@@ -517,6 +595,15 @@ class SocialMediaOptimizerEnv(Environment):
                         max(0.0, reference_share - brand.get("budget_spent", 0.0)), 2
                     ),
                     last_budget_fraction=round(brand.get("last_budget_fraction", 0.0), 4),
+                    fatigue_score=round(brand.get("fatigue_score", 0.0), 4),
+                    trend_momentum=round(brand.get("trend_momentum", 0.0), 4),
+                    risk_level=round(brand.get("risk_level", 0.0), 4),
+                    policy_violations=int(brand.get("policy_violations", 0)),
+                    cumulative_conversions=round(brand.get("cumulative_conversions", 0.0), 4),
+                    pending_conversions=round(
+                        sum(item["amount"] for item in brand.get("pending_conversion_queue", [])),
+                        4,
+                    ),
                 )
             )
 
@@ -529,6 +616,11 @@ class SocialMediaOptimizerEnv(Environment):
             max_steps=self._max_steps,
             daily_budget=self._daily_budget,
             last_action_error=error,
+            market_trend=round(self._market_trend_for_step(self._current_step), 4),
+            shock_event_active=self._active_shock_platform(self._current_step) is not None,
+            shock_platform=self._active_shock_platform(self._current_step),
+            total_policy_violations=self._total_policy_violations,
+            total_conversions=round(self._total_conversions, 4),
             reward=reward,
             done=done,
             metadata={
@@ -538,6 +630,8 @@ class SocialMediaOptimizerEnv(Environment):
                 "data_root": str(self._data_root) if self._data_root else "",
                 "sqlite_path": str(self._sqlite_path) if self._sqlite_path else "",
                 "data_mode": self._brands[0].get("data_source", "synthetic") if self._brands else "synthetic",
+                "shock_platform": self._shock_platform,
+                "shock_window": [self._shock_start, self._shock_start + self._shock_duration - 1],
             },
         )
 
@@ -551,6 +645,8 @@ class SocialMediaOptimizerEnv(Environment):
             "task_id": self._task_id,
             "task_name": self._task["name"],
             "portfolio_paid_lift_total": round(self._portfolio_paid_lift_total, 4),
+            "total_conversions": round(self._total_conversions, 4),
+            "total_policy_violations": self._total_policy_violations,
         }
 
     def _refresh_state(self) -> None:
@@ -562,7 +658,86 @@ class SocialMediaOptimizerEnv(Environment):
             total_reward=round(self._total_reward, 4),
             brand_configs=[{k: v for k, v in brand.items()} for brand in self._brands],
             engagement_log=self._engagement_log.copy(),
+            total_policy_violations=self._total_policy_violations,
+            total_conversions=round(self._total_conversions, 4),
         )
+
+    def _market_trend_for_step(self, step: int) -> float:
+        """Compute a smooth, deterministic market trend in [-1, 1]."""
+        phase = (2 * math.pi * step) / max(6, self._max_steps)
+        return max(-1.0, min(1.0, math.sin(phase + (self._seed % 17) * 0.11)))
+
+    def _active_shock_platform(self, step: int) -> Optional[str]:
+        """Return the impacted platform during the temporary shock window."""
+        if self._shock_start <= step < (self._shock_start + self._shock_duration):
+            return self._shock_platform
+        return None
+
+    def _shock_penalty_multiplier(self, platform: str, shock_platform: Optional[str]) -> float:
+        """Apply temporary reach penalty for a shocked platform."""
+        if not shock_platform:
+            return 1.0
+        return 0.78 if platform == shock_platform else 1.0
+
+    def _policy_risk(self, brand: Dict[str, Any], action: SocialAction) -> tuple[float, bool]:
+        """Estimate compliance risk and sampled violation event."""
+        base_by_content = {
+            "reel": 0.07,
+            "carousel": 0.05,
+            "static": 0.03,
+        }
+        late_slot_risk = 0.02 if action.post_time_slot in (0, 5) else 0.0
+        youth_risk = 0.02 if brand.get("audience_type") == "youth" and action.content_type == "reel" else 0.0
+        fatigue_risk = min(0.05, 0.01 * self._recent_streak(brand.get("recent_content_types", []), action.content_type))
+        risk = min(0.35, base_by_content.get(action.content_type, 0.04) + late_slot_risk + youth_risk + fatigue_risk)
+        violation = self._rng.random() < risk
+        return risk, violation
+
+    def _queue_future_conversions(
+        self,
+        brand: Dict[str, Any],
+        engagement: float,
+        budget_fraction: float,
+        market_trend: float,
+    ) -> float:
+        """Queue delayed conversions and return expected conversion signal."""
+        expected = max(
+            0.0,
+            (0.28 * engagement + 0.20 * math.sqrt(max(0.0, budget_fraction)))
+            * (0.9 + 0.1 * brand.get("brand_quality", 1.0))
+            * (1.0 + 0.12 * market_trend),
+        )
+        chunks = [0.45 * expected, 0.35 * expected, 0.20 * expected]
+        for delay, amount in enumerate(chunks, start=1):
+            brand["pending_conversion_queue"].append(
+                {"eta_step": self._current_step + delay, "amount": amount}
+            )
+        return expected
+
+    def _apply_conversion_pipeline(self) -> float:
+        """Realize conversions whose delay has elapsed across all brands."""
+        realized = 0.0
+        for brand in self._brands:
+            queue = brand.get("pending_conversion_queue", [])
+            ready = [item for item in queue if item["eta_step"] <= self._current_step]
+            future = [item for item in queue if item["eta_step"] > self._current_step]
+            realized_here = sum(item["amount"] for item in ready)
+            brand["cumulative_conversions"] = brand.get("cumulative_conversions", 0.0) + realized_here
+            brand["pending_conversion_queue"] = future
+            realized += realized_here
+        return realized
+
+    def _fatigue_score(self, brand: Dict[str, Any]) -> float:
+        """Simple fatigue metric combining repetition and high frequency posting."""
+        content = brand.get("recent_content_types", [])
+        slots = brand.get("recent_time_slots", [])
+        if not content:
+            return 0.0
+        repeated_content = self._recent_streak(content[:-1], content[-1]) if len(content) > 1 else 0
+        repeated_slot = self._recent_streak(slots[:-1], slots[-1]) if len(slots) > 1 else 0
+        cadence_pressure = 1.0 if self._days_since_last_post(brand) <= 1 else 0.0
+        score = 0.25 * repeated_content + 0.20 * repeated_slot + 0.25 * cadence_pressure
+        return max(0.0, min(1.0, score))
 
     def _days_since_last_post(self, brand: Dict[str, Any]) -> int:
         """Compute how many planning steps have passed since this brand was posted."""

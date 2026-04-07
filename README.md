@@ -29,9 +29,12 @@ The environment is designed around real agency workflow themes from the
 hackathon brief: dynamic optimization, multi-brand coordination, and
 portfolio-level tradeoffs instead of static reporting.
 
-When `../test_data` is available, the env bootstraps a local SQLite database
-from those CSVs and then loads channel-aware brand profiles from SQLite before
-falling back to fully synthetic generation.
+New advanced dynamics now include:
+- delayed conversion pipeline (not just immediate engagement)
+- compliance and policy-risk penalties
+- market-trend regime shifts
+- temporary platform shock events
+- creative fatigue tracking
 
 ## 🧩 Environment Description
 
@@ -39,7 +42,7 @@ falling back to fully synthetic generation.
 |---|---|
 | **Action space** | Brand selection (int), content type (reel/carousel/static), time slot (0-5), daily budget fractions (Task 3) |
 | **Observation space** | Per-brand engagement history, average engagement, recent content/slot usage, cadence, follower count, budget state, day/step counters |
-| **Reward** | Dense per-step reward. Task 2 penalizes neglect/imbalance. Task 3 rewards portfolio efficiency and diversification. |
+| **Reward** | Dense per-step reward with immediate engagement + delayed conversions + risk/compliance penalties. Task 2 penalizes neglect/imbalance. Task 3 rewards portfolio efficiency, diversification, and resilient strategy under shocks. |
 | **Episode length** | Task-dependent: 7 / 14 / 21 steps |
 
 ## 📋 Tasks
@@ -151,8 +154,8 @@ social-media-optimizer/
 ## Reward Design
 
 - **Task 1:** Direct engagement reward with posting-cadence and fatigue effects.
-- **Task 2:** Engagement reward plus brand-coverage bonus, with penalties for neglect and over-concentration.
-- **Task 3:** Organic engagement plus portfolio paid lift, with penalties for over-concentrated budget allocations.
+- **Task 2:** Engagement + conversion reward plus brand-coverage bonus, with penalties for neglect, over-concentration, and policy risk.
+- **Task 3:** Organic engagement + portfolio paid lift + delayed conversion outcomes, with penalties for over-concentrated budget allocations and compliance violations.
 
 ## Notes
 

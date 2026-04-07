@@ -22,7 +22,7 @@ import re
 import sys
 import textwrap
 from pathlib import Path
-from typing import List, Tuple
+from typing import List
 
 import requests
 from openai import OpenAI
@@ -45,13 +45,10 @@ def _load_local_env() -> None:
 _load_local_env()
 
 
-# ── Configuration (mandatory env vars with defaults) ─────────────────
-API_BASE_URL = os.getenv(
-    "API_BASE_URL",
-    "https://generativelanguage.googleapis.com/v1beta/openai/",
-)
-MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-flash")
-HF_TOKEN = os.getenv("HF_TOKEN", os.getenv("GEMINI_API_KEY", ""))
+# ── Configuration (mandatory env vars) ───────────────────────────────
+API_BASE_URL = os.getenv("API_BASE_URL")
+MODEL_NAME = os.getenv("MODEL_NAME")
+HF_TOKEN = os.getenv("HF_TOKEN")
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME", "social-media-optimizer")
 
 ENV_PORT = int(os.getenv("ENV_PORT", "7860"))
@@ -89,6 +86,13 @@ SYSTEM_PROMPT = textwrap.dedent(
     - content_mix and total_posts
     - days_since_last_post (CRITICAL for scoring)
     - budget_spent and last_budget_fraction
+    - fatigue_score, trend_momentum, risk_level, policy_violations
+    - cumulative_conversions and pending_conversions
+
+    Global fields include:
+    - market_trend: positive means aggressive growth window, negative means defensive period
+    - shock_event_active / shock_platform: temporary platform-level performance suppression
+    - total_policy_violations and total_conversions
 
     Respond with ONLY a JSON object (no markdown, no explanation):
     {
@@ -111,6 +115,9 @@ SYSTEM_PROMPT = textwrap.dedent(
     4. In Task 3, spread budget_fractions across ALL brands (e.g. [0.2,0.2,0.2,0.2,0.2]).
        Never give 0.0 to any brand. The grader rewards diversification.
     5. In Tasks 2 and 3, aim for roughly equal total_posts across all brands.
+     6. During shock_event_active, de-prioritize brands on the shock_platform.
+     7. Keep policy risk low: avoid repeatedly selecting high risk brands with high fatigue_score.
+     8. Optimize delayed outcomes: prefer brands with strong pending_conversions momentum and low violations.
     """
 )
 
@@ -170,48 +177,6 @@ def parse_action(response_text: str, task_id: int, n_brands: int) -> dict:
     return action
 
 
-def _smart_brand_override(action: dict, brands: list, task_id: int) -> dict:
-    """
-    Override the LLM's brand choice when any brand is being neglected.
-
-    Picks the brand with the fewest total_posts (ties broken by
-    highest days_since_last_post). Also matches content type and
-    time slot to the selected brand's audience type.
-    """
-    if len(brands) <= 1:
-        return action
-
-    brand_priority = []
-    for i, b in enumerate(brands):
-        if isinstance(b, dict):
-            posts = b.get("total_posts", 0)
-            days = b.get("days_since_last_post", 0)
-            audience = b.get("audience_type", "general")
-        else:
-            posts = getattr(b, "total_posts", 0)
-            days = getattr(b, "days_since_last_post", 0)
-            audience = getattr(b, "audience_type", "general")
-        brand_priority.append((posts, -days, i, audience))
-
-    brand_priority.sort()
-    best_idx = brand_priority[0][2]
-    best_audience = brand_priority[0][3]
-
-    action["brand_id"] = best_idx
-
-    audience_strategy = {
-        "youth":    {"content_type": "reel",     "post_time_slot": 5},
-        "consumer": {"content_type": "reel",     "post_time_slot": 5},
-        "b2b":      {"content_type": "carousel", "post_time_slot": 1},
-        "general":  {"content_type": "reel",     "post_time_slot": 4},
-    }
-    strategy = audience_strategy.get(best_audience, audience_strategy["general"])
-    action["content_type"] = strategy["content_type"]
-    action["post_time_slot"] = strategy["post_time_slot"]
-
-    return action
-
-
 def _action_str(action: dict) -> str:
     """Compact action string for [STEP] output."""
     return json.dumps(action, separators=(",", ":"))
@@ -227,17 +192,6 @@ def _completion(client: OpenAI, messages: list[dict]) -> str:
         stream=False,
     )
     return completion.choices[0].message.content or ""
-
-
-def _fallback_action(task_id: int, n_brands: int) -> dict:
-    """Provide a safe action if the LLM call fails."""
-    budget = [1.0 / max(n_brands, 1)] * n_brands if task_id == 3 else []
-    return {
-        "brand_id": 0,
-        "content_type": "reel",
-        "post_time_slot": 5,
-        "budget_fractions": budget,
-    }
 
 
 def _check_server(env_url: str) -> bool:
@@ -279,13 +233,9 @@ def run_task_local(client: OpenAI, task_id: int) -> float:
                 {"role": "user", "content": user_content},
             ]
 
-            try:
-                response_text = _completion(client, messages)
-            except Exception:
-                response_text = json.dumps(_fallback_action(task_id, n_brands))
+            response_text = _completion(client, messages)
 
             action_dict = parse_action(response_text, task_id, n_brands)
-            action_dict = _smart_brand_override(action_dict, obs.brands, task_id)
 
             obs = env.step(ActionClass(**action_dict))
             reward = obs.reward if obs.reward is not None else 0.0
@@ -365,13 +315,9 @@ def run_task_http(client: OpenAI, env_url: str, task_id: int) -> float:
                 {"role": "user", "content": user_content},
             ]
 
-            try:
-                response_text = _completion(client, messages)
-            except Exception:
-                response_text = json.dumps(_fallback_action(task_id, n_brands))
+            response_text = _completion(client, messages)
 
             action = parse_action(response_text, task_id, n_brands)
-            action = _smart_brand_override(action, obs.get("brands", []), task_id)
 
             resp = requests.post(f"{env_url}/step", json={"action": action}, timeout=30)
             resp.raise_for_status()
@@ -424,10 +370,15 @@ def run_task_http(client: OpenAI, env_url: str, task_id: int) -> float:
 # ── Main ─────────────────────────────────────────────────────────────
 def main() -> None:
     """Run inference against all three tasks."""
+    missing = []
+    if not API_BASE_URL:
+        missing.append("API_BASE_URL")
+    if not MODEL_NAME:
+        missing.append("MODEL_NAME")
     if not HF_TOKEN:
-        raise RuntimeError(
-            "Missing API key. Set HF_TOKEN (or GEMINI_API_KEY) in your shell or .env file."
-        )
+        missing.append("HF_TOKEN")
+    if missing:
+        raise RuntimeError(f"Missing mandatory env vars: {', '.join(missing)}")
 
     llm_client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
     use_http = _check_server(ENV_BASE_URL)

@@ -62,6 +62,12 @@ class BrandState(BaseModel):
     budget_spent: float = 0.0
     budget_remaining: float = 0.0
     last_budget_fraction: float = 0.0
+    fatigue_score: float = 0.0
+    trend_momentum: float = 0.0
+    risk_level: float = 0.0
+    policy_violations: int = 0
+    cumulative_conversions: float = 0.0
+    pending_conversions: float = 0.0
 
 
 class SocialObservation(Observation):
@@ -95,6 +101,26 @@ class SocialObservation(Observation):
     last_action_error: Optional[str] = Field(
         default=None, description="Error message if the last action was invalid."
     )
+    market_trend: float = Field(
+        default=0.0,
+        description="Global market trend multiplier in [-1, 1] affecting all brands.",
+    )
+    shock_event_active: bool = Field(
+        default=False,
+        description="Whether a temporary platform shock event is active for this step.",
+    )
+    shock_platform: Optional[str] = Field(
+        default=None,
+        description="Platform impacted by the active shock event, if any.",
+    )
+    total_policy_violations: int = Field(
+        default=0,
+        description="Cumulative policy violations across all brands in the episode.",
+    )
+    total_conversions: float = Field(
+        default=0.0,
+        description="Cumulative realized conversions across all brands.",
+    )
 
 
 class SocialState(State):
@@ -106,3 +132,5 @@ class SocialState(State):
     total_reward: float = 0.0
     brand_configs: List[Dict[str, Any]] = Field(default_factory=list)
     engagement_log: List[Dict[str, Any]] = Field(default_factory=list)
+    total_policy_violations: int = 0
+    total_conversions: float = 0.0
