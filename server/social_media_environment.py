@@ -60,7 +60,6 @@ TASK_CONFIG = {
 }
 
 VALID_CONTENT_TYPES = {"reel", "carousel", "static"}
-DEFAULT_DATA_ROOT = Path(__file__).resolve().parents[2] / "test_data"
 DEFAULT_SQLITE_PATH = Path(__file__).resolve().parents[1] / "data" / "social_media.db"
 
 
@@ -97,10 +96,7 @@ class SocialMediaOptimizerEnv(Environment):
         self._seed = seed if seed is not None else random.randint(0, 2**31)
         self._rng = random.Random(self._seed)
 
-        requested_data_root = kwargs.get("data_root") or kwargs.get("dataset_root")
-        self._data_root = Path(requested_data_root) if requested_data_root else Path(
-            os.environ.get("SOCIAL_DATA_ROOT", DEFAULT_DATA_ROOT)
-        )
+        self._data_root = None
         requested_sqlite_path = kwargs.get("sqlite_path") or kwargs.get("db_path")
         self._sqlite_path = (
             Path(requested_sqlite_path)
@@ -768,18 +764,14 @@ class SocialMediaOptimizerEnv(Environment):
         return [brand["total_posts"] for brand in self._brands]
 
     def _load_brands(self, n_brands: int) -> List[Dict[str, Any]]:
-        """Load brands from SQLite, auto-seeding from test_data if needed."""
+        """Load brands from SQLite, auto-seeding synthetic data if needed."""
         if self._sqlite_path:
-            ensure_sqlite_seeded(self._sqlite_path, self._data_root)
+            ensure_sqlite_seeded(self._sqlite_path)
             db_brands = load_brand_channels_from_sqlite(self._sqlite_path, n_brands)
             if db_brands:
                 for index, brand in enumerate(db_brands):
                     brand["brand_id"] = index
                 return db_brands
-
-        if self._data_root and self._data_root.exists():
-            # If SQLite bootstrapping failed for some reason, fall through to synthetic.
-            pass
 
         brands = generate_brands(n_brands, self._seed)
         for brand in brands:

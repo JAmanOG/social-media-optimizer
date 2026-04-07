@@ -1,6 +1,5 @@
 ---
 title: Social Media Optimizer
-emoji: 📱
 colorFrom: blue
 colorTo: purple
 sdk: docker
@@ -89,17 +88,16 @@ cp .env.example .env
 
 ### Using SQLite As the Local Database
 
-This is the recommended local setup right now. The database is seeded from
-`../test_data`, so the CSVs remain your bootstrap source while the environment
-reads through SQLite.
+This is the recommended local setup right now. The database is seeded with
+synthetic-only records for safe sharing and reproducible runs.
 
 ```bash
-SOCIAL_DATA_ROOT=../test_data ./venv/bin/python init_sqlite_db.py
+./venv/bin/python init_sqlite_db.py
 SOCIAL_SQLITE_PATH=./data/social_media.db ./venv/bin/python test_smoke.py
 SOCIAL_SQLITE_PATH=./data/social_media.db ./venv/bin/python inference.py
 ```
 
-With the current dataset, the database stores normalized raw posts plus derived
+The database stores normalized synthetic raw posts plus derived
 channel profiles. Task 3 naturally uses the five channels:
 Instagram, Facebook, LinkedIn, YouTube, and X.
 
@@ -135,7 +133,7 @@ social-media-optimizer/
 ├── models.py                 # Pydantic Action/Observation/State types
 ├── client.py                 # EnvClient subclass
 ├── inference.py              # Baseline LLM inference script (Gemini local, HF prod)
-├── init_sqlite_db.py         # Seed SQLite database from test_data CSVs
+├── init_sqlite_db.py         # Seed synthetic SQLite database
 ├── test_smoke.py             # Comprehensive smoke test suite
 ├── openenv.yaml              # OpenEnv metadata
 ├── pyproject.toml            # Python package config
@@ -162,6 +160,7 @@ social-media-optimizer/
 - Invalid actions count as wasted turns, so agents cannot stall episodes indefinitely.
 - Task 3 models the budget as a fresh daily decision, not a one-time episode budget.
 - The smoke test includes checks for the old exploit paths: single-brand neglect and all-budget-to-one-brand.
+- The repository is configured for synthetic-only local data.
 
 ## 🔗 Deploy to HuggingFace
 

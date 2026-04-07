@@ -1,8 +1,8 @@
 """
 SQLite-backed local datasource utilities for the Social Media Optimizer env.
 
-The database is bootstrapped from `test_data` so we can treat the local files as
-an initial datasource while interacting with a proper database interface.
+The local database is seeded with synthetic data so the environment remains safe
+for sharing and reproducible across machines.
 """
 
 from __future__ import annotations
@@ -10,7 +10,6 @@ from __future__ import annotations
 import csv
 import json
 import math
-import os
 import random
 import sqlite3
 from pathlib import Path
@@ -44,25 +43,21 @@ SYNTHETIC_PARENT_BRANDS = [
 ]
 
 
-def ensure_sqlite_seeded(db_path: Path, data_root: Path) -> Path:
+def ensure_sqlite_seeded(db_path: Path, data_root: Optional[Path] = None) -> Path:
     """
-    Ensure a SQLite database exists and is populated from the CSV seed data.
+    Ensure a SQLite database exists and is populated with synthetic seed data.
 
     If the DB already exists and contains channel profiles, it is reused.
     """
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    seed_mode = os.environ.get("SOCIAL_DATA_SOURCE", "synthetic").strip().lower()
 
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         _create_schema(conn)
         channel_count = conn.execute("SELECT COUNT(*) FROM channel_profiles").fetchone()[0]
         if channel_count == 0:
-            if seed_mode in {"synthetic", "synthetic-only", "fake"}:
-                _seed_synthetic(conn)
-            else:
-                _seed_from_csv(conn, data_root)
+            _seed_synthetic(conn)
     return db_path
 
 

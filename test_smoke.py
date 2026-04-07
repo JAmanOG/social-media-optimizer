@@ -6,25 +6,15 @@ from __future__ import annotations
 import os
 import random
 import sys
-from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
 
 from models import SocialAction
-from server.data_source import ensure_sqlite_seeded, summarize_sqlite
 from server.simulation import compute_engagement, generate_brands
 from server.social_media_environment import SocialMediaOptimizerEnv
 
 
 def main() -> None:
-    data_root = Path(os.environ.get("SOCIAL_DATA_ROOT", Path(__file__).resolve().parents[1] / "test_data"))
-    sqlite_path = Path(
-        os.environ.get(
-            "SOCIAL_SQLITE_PATH",
-            Path(__file__).resolve().parent / "data" / "social_media.db",
-        )
-    )
-
     print("Testing simulation module...")
     brands = generate_brands(3, seed=42)
     assert len(brands) == 3
@@ -166,29 +156,6 @@ def main() -> None:
     assert obs1.brands[0].brand_name == obs2.brands[0].brand_name
     assert abs(reward1 - reward2) < 1e-4
     print(f"  Reproducibility OK: run1={reward1:.4f} run2={reward2:.4f}")
-
-    if data_root.exists():
-        print("\nTesting SQLite datasource mode...")
-        sqlite_mode_db = sqlite_path.with_name("social_media_sqlite_mode.db")
-        if sqlite_mode_db.exists():
-            sqlite_mode_db.unlink()
-        os.environ["SOCIAL_DATA_SOURCE"] = "sqlite"
-        ensure_sqlite_seeded(sqlite_mode_db, data_root)
-        db_summary = summarize_sqlite(sqlite_mode_db)
-        assert db_summary["exists"] is True
-        assert db_summary["channel_profiles"] >= 5
-
-        sqlite_env = SocialMediaOptimizerEnv(task_id=3, seed=42)
-        sqlite_obs = sqlite_env.reset(task_id=3, seed=42, sqlite_path=str(sqlite_mode_db))
-        platforms = [brand.platform for brand in sqlite_obs.brands]
-        assert sqlite_obs.metadata.get("data_mode") == "sqlite"
-        assert Path(sqlite_obs.metadata.get("sqlite_path", "")).exists()
-        assert "instagram" in platforms and "linkedin" in platforms
-        print(
-            f"  SQLite datasource OK: db={sqlite_mode_db} "
-            f"profiles={db_summary['channel_profiles']} raw_posts={db_summary['raw_posts']} "
-            f"platforms={platforms}"
-        )
 
     print("\nALL TESTS PASSED")
 
