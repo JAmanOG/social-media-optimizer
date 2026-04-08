@@ -23,10 +23,16 @@ import re
 import sys
 import textwrap
 from pathlib import Path
-from typing import List
+from typing import Any, List
 
 import requests
-from openai import OpenAI
+
+try:
+    from openai import OpenAI
+    OPENAI_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover - defensive import fallback
+    OpenAI = Any  # type: ignore[assignment]
+    OPENAI_IMPORT_ERROR = exc
 
 
 # ── .env loader ──────────────────────────────────────────────────────
@@ -49,11 +55,11 @@ _load_local_env()
 # ── Configuration (mandatory env vars) ───────────────────────────────
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://openrouter.ai/api/v1")
 MODEL_NAME = os.environ.get("MODEL_NAME", "openrouter/free")
-HF_TOKEN = os.environ["HF_TOKEN"]
+HF_TOKEN = os.environ.get("HF_TOKEN")
 LOCAL_IMAGE_NAME = os.environ.get("LOCAL_IMAGE_NAME", "social-media-optimizer")
 
 ENV_PORT = int(os.environ.get("PORT", "7860"))
-ENV_BASE_URL = os.environ.get("HOST", f"http://0.0.0.0:{ENV_PORT}")
+ENV_BASE_URL = os.environ.get("HOST", f"http://127.0.0.1:{ENV_PORT}")
 ENV_NAME = "social-media-optimizer"
 
 TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.3"))
@@ -183,6 +189,17 @@ def _action_str(action: dict) -> str:
     return json.dumps(action, separators=(",", ":"))
 
 
+def _emit_task_failure(task_id: int, error: str) -> None:
+    """Emit a well-formed failed episode so the validator doesn't see a crash."""
+    task_name = TASK_NAMES.get(task_id, f"task-{task_id}")
+    print(f"[START] task={task_name} env={ENV_NAME} model={MODEL_NAME}")
+    print(
+        f"[STEP] step=0 action={{}} reward=0.00 done=true error={error}",
+        flush=True,
+    )
+    print("[END] success=false steps=0 score=0.00 rewards=", flush=True)
+
+
 def _completion(client: OpenAI, messages: list[dict]) -> str:
     """Generate one chat completion."""
     completion = client.chat.completions.create(
@@ -197,6 +214,9 @@ def _completion(client: OpenAI, messages: list[dict]) -> str:
 
 def _check_server(env_url: str) -> bool:
     """Check if the HTTP server is running."""
+    if "hf.space" in env_url:
+        # OpenEnv Spaces are intended to be used via WebSockets for episodes.
+        return True
     try:
         return requests.get(f"{env_url}/health", timeout=3).status_code == 200
     except Exception:
@@ -431,11 +451,27 @@ def main() -> None:
         missing.append("MODEL_NAME")
     if not HF_TOKEN:
         missing.append("HF_TOKEN")
-    if missing:
-        raise RuntimeError(f"Missing mandatory env vars: {', '.join(missing)}")
+    if OPENAI_IMPORT_ERROR is not None:
+        for task_id in (1, 2, 3):
+            _emit_task_failure(task_id, f"OpenAI import failed: {OPENAI_IMPORT_ERROR}")
+        return
 
-    llm_client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
-    use_ws = _check_server(ENV_BASE_URL)
+    if missing:
+        for task_id in (1, 2, 3):
+            _emit_task_failure(task_id, f"Missing mandatory env vars: {', '.join(missing)}")
+        return
+
+    try:
+        llm_client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+    except Exception as exc:
+        for task_id in (1, 2, 3):
+            _emit_task_failure(task_id, f"OpenAI client init failed: {exc}")
+        return
+
+    try:
+        use_ws = _check_server(ENV_BASE_URL)
+    except Exception:
+        use_ws = False
 
     for task_id in (1, 2, 3):
         try:
