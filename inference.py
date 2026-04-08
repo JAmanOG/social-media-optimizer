@@ -47,17 +47,17 @@ _load_local_env()
 
 
 # ── Configuration (mandatory env vars) ───────────────────────────────
-API_BASE_URL = os.getenv("API_BASE_URL","https://openrouter.ai/api/v1")
-MODEL_NAME = os.getenv("MODEL_NAME","openrouter/free")
-HF_TOKEN = os.getenv("HF_TOKEN")
-LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME", "social-media-optimizer")
+API_BASE_URL = os.environ.get("API_BASE_URL", "https://openrouter.ai/api/v1")
+MODEL_NAME = os.environ.get("MODEL_NAME", "openrouter/free")
+HF_TOKEN = os.environ["HF_TOKEN"]
+LOCAL_IMAGE_NAME = os.environ.get("LOCAL_IMAGE_NAME", "social-media-optimizer")
 
-ENV_PORT = int(os.getenv("PORT", "7860"))
-ENV_BASE_URL = os.getenv("HOST", f"http://0.0.0.0:{ENV_PORT}")
+ENV_PORT = int(os.environ.get("PORT", "7860"))
+ENV_BASE_URL = os.environ.get("HOST", f"http://0.0.0.0:{ENV_PORT}")
 ENV_NAME = "social-media-optimizer"
 
-TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))
-MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "512"))
+TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.3"))
+MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "512"))
 
 TASK_NAMES = {
     1: "single-brand-engagement",
