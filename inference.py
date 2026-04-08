@@ -52,8 +52,8 @@ MODEL_NAME = os.getenv("MODEL_NAME","openrouter/free")
 HF_TOKEN = os.getenv("HF_TOKEN")
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME", "social-media-optimizer")
 
-ENV_PORT = int(os.getenv("ENV_PORT", "7860"))
-ENV_BASE_URL = os.getenv("ENV_BASE_URL", f"http://localhost:{ENV_PORT}")
+ENV_PORT = int(os.getenv("PORT", "7860"))
+ENV_BASE_URL = os.getenv("HOST", f"http://0.0.0.0:{ENV_PORT}")
 ENV_NAME = "social-media-optimizer"
 
 TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))

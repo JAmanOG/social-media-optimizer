@@ -94,6 +94,15 @@ def main() -> None:
     )
 
     print("\nTesting Task 3 diversification behavior...")
+    parsed_action = SocialAction(
+        brand_id=0,
+        content_type="reel",
+        post_time_slot=5,
+        budget_fractions="[0.2, 0.2, 0.2, 0.2, 0.2]",
+    )
+    assert parsed_action.budget_fractions == [0.2, 0.2, 0.2, 0.2, 0.2]
+    print("  String budget parsing OK")
+
     uniform_env = SocialMediaOptimizerEnv(task_id=3, seed=42)
     uniform_obs = uniform_env.reset(task_id=3, seed=42)
     while not uniform_obs.done:
