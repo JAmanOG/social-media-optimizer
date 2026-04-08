@@ -19,7 +19,11 @@ from openenv.core.env_server import Environment
 # Support both in-repo and standalone imports
 try:
     from ..models import BrandState, SocialAction, SocialObservation, SocialState
-    from .data_source import ensure_sqlite_seeded, load_brand_channels_from_sqlite
+    from .data_source import (
+        ensure_sqlite_seeded,
+        load_brand_channels_from_local_data,
+        load_brand_channels_from_sqlite,
+    )
     from .simulation import (
         compute_engagement,
         compute_paid_engagement_lift,
@@ -27,7 +31,11 @@ try:
     )
 except ImportError:
     from models import BrandState, SocialAction, SocialObservation, SocialState
-    from server.data_source import ensure_sqlite_seeded, load_brand_channels_from_sqlite
+    from server.data_source import (
+        ensure_sqlite_seeded,
+        load_brand_channels_from_local_data,
+        load_brand_channels_from_sqlite,
+    )
     from server.simulation import (
         compute_engagement,
         compute_paid_engagement_lift,
@@ -117,7 +125,12 @@ class SocialMediaOptimizerEnv(Environment):
         self._seed = seed if seed is not None else random.randint(0, 2**31)
         self._rng = random.Random(self._seed)
 
-        self._data_root = None
+        requested_data_root = kwargs.get("data_root")
+        self._data_root = (
+            Path(requested_data_root)
+            if requested_data_root
+            else Path(os.environ.get("SOCIAL_DATA_ROOT", Path(__file__).resolve().parents[1] / "data"))
+        )
         requested_sqlite_path = kwargs.get("sqlite_path") or kwargs.get("db_path")
         self._sqlite_path = (
             Path(requested_sqlite_path)
@@ -786,14 +799,29 @@ class SocialMediaOptimizerEnv(Environment):
         return [brand["total_posts"] for brand in self._brands]
 
     def _load_brands(self, n_brands: int) -> List[Dict[str, Any]]:
-        """Load brands from SQLite, auto-seeding synthetic data if needed."""
+        """Load brands from SQLite, raw local CSV exports, or synthetic fallback."""
         if self._sqlite_path:
-            ensure_sqlite_seeded(self._sqlite_path)
-            db_brands = load_brand_channels_from_sqlite(self._sqlite_path, n_brands)
+            try:
+                ensure_sqlite_seeded(self._sqlite_path, self._data_root)
+                db_brands = load_brand_channels_from_sqlite(self._sqlite_path, n_brands)
+            except Exception:
+                db_brands = []
+
             if db_brands:
                 for index, brand in enumerate(db_brands):
                     brand["brand_id"] = index
                 return db_brands
+
+        if self._data_root:
+            try:
+                local_brands = load_brand_channels_from_local_data(self._data_root, n_brands)
+            except Exception:
+                local_brands = []
+
+            if local_brands:
+                for index, brand in enumerate(local_brands):
+                    brand["brand_id"] = index
+                return local_brands
 
         brands = generate_brands(n_brands, self._seed)
         for brand in brands:

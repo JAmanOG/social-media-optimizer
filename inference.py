@@ -234,7 +234,6 @@ def run_task_local(client: OpenAI, task_id: int) -> float:
         print(
             f"[STEP] step=0 action={{}} reward=0.00 done=true "
             f"error=Local env unavailable: {exc}",
-            file=sys.stderr,
         )
         print(f"[END] success=false steps=0 score=0.00 rewards=")
         return 0.0
@@ -297,7 +296,7 @@ def run_task_local(client: OpenAI, task_id: int) -> float:
             success = score > 0.0
 
     except Exception as exc:
-        print(f"[STEP] step={step_num} action={{}} reward=0.00 done=true error={exc}", file=sys.stderr)
+        print(f"[STEP] step={step_num} action={{}} reward=0.00 done=true error={exc}")
         success = False
 
     # [END]
@@ -340,7 +339,6 @@ def run_task_ws(client: OpenAI, env_url: str, task_id: int) -> float:
                     print(
                         f"[STEP] step=0 action={{}} reward=0.00 done=true "
                         f"error=Reset failed: {exc}",
-                        file=sys.stderr,
                     )
                     print(f"[END] success=false steps=0 score=0.00 rewards=")
                     return
@@ -409,7 +407,6 @@ def run_task_ws(client: OpenAI, env_url: str, task_id: int) -> float:
                 except Exception as exc:
                     print(
                         f"[STEP] step={step_num} action={{}} reward=0.00 done=true error={exc}",
-                        file=sys.stderr,
                     )
                     success = False
 
@@ -418,7 +415,6 @@ def run_task_ws(client: OpenAI, env_url: str, task_id: int) -> float:
             print(
                 f"[STEP] step=0 action={{}} reward=0.00 done=true "
                 f"error=WebSocket connection failed: {exc}",
-                file=sys.stderr,
             )
             print(f"[END] success=false steps=0 score=0.00 rewards=")
             return
@@ -484,7 +480,6 @@ def main() -> None:
             print(f"[START] task={task_name} env={ENV_NAME} model={MODEL_NAME}")
             print(
                 f"[STEP] step=0 action={{}} reward=0.00 done=true error={exc}",
-                file=sys.stderr,
             )
             print(f"[END] success=false steps=0 score=0.00 rewards=")
 

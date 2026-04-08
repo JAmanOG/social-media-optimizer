@@ -129,6 +129,63 @@ def load_brand_channels_from_sqlite(db_path: Path, n_channels: int) -> List[Dict
     return channels
 
 
+def load_brand_channels_from_local_data(data_root: Path, n_channels: int) -> List[Dict[str, Any]]:
+    """Load channel-calibrated brand entities directly from local brand CSV exports."""
+    brand_root = Path(data_root) / "brand"
+    if not brand_root.exists():
+        return []
+
+    profiles: List[Dict[str, Any]] = []
+    for brand_dir in sorted(path for path in brand_root.iterdir() if path.is_dir()):
+        for csv_path in sorted(brand_dir.glob("*.csv")):
+            platform_key = PLATFORM_NAME_MAP.get(csv_path.stem.lower(), csv_path.stem.lower())
+            try:
+                rows = _read_csv_rows(csv_path)
+            except OSError:
+                continue
+
+            summary = _summarize_channel_rows(brand_dir.name, platform_key, rows)
+            if not summary:
+                continue
+
+            content_mix = json.loads(summary["historical_content_mix_json"] or "{}")
+            profiles.append(
+                {
+                    "brand_name": summary["brand_name"],
+                    "platform": summary["platform"],
+                    "brand_slug": summary["brand_slug"],
+                    "data_source": "local_csv",
+                    "audience_type": summary["audience_type"],
+                    "follower_count": summary["follower_count"],
+                    "brand_quality": summary["brand_quality"],
+                    "historical_posts": summary["historical_posts"],
+                    "historical_average_engagement": summary["historical_average_engagement"],
+                    "historical_content_mix": content_mix,
+                    "engagement_history": [],
+                    "recent_content_types": [],
+                    "recent_time_slots": [],
+                    "content_mix": {"reel": 0, "carousel": 0, "static": 0},
+                    "total_posts": 0,
+                    "last_post_step": None,
+                    "last_budget_fraction": 0.0,
+                    "cumulative_budget_spent": 0.0,
+                    "budget_spent": 0.0,
+                    "budget_remaining": 0.0,
+                }
+            )
+
+    profiles.sort(
+        key=lambda item: (
+            PLATFORM_ORDER.index(item["platform"])
+            if item["platform"] in PLATFORM_ORDER
+            else 99,
+            -int(item["historical_posts"]),
+            item["brand_name"],
+        )
+    )
+    return profiles[:n_channels]
+
+
 def summarize_sqlite(db_path: Path) -> Dict[str, Any]:
     """Return a small summary of the SQLite store for debugging/tests."""
     if not Path(db_path).exists():
