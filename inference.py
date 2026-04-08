@@ -16,6 +16,7 @@ STDOUT FORMAT:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -205,7 +206,19 @@ def _check_server(env_url: str) -> bool:
 # ── Task runners ─────────────────────────────────────────────────────
 def run_task_local(client: OpenAI, task_id: int) -> float:
     """Run one task in-process with mandatory [START]/[STEP]/[END] output."""
-    EnvClass, ActionClass = _create_local_env()
+    try:
+        EnvClass, ActionClass = _create_local_env()
+    except Exception as exc:
+        task_name = TASK_NAMES.get(task_id, f"task-{task_id}")
+        print(f"[START] task={task_name} env={ENV_NAME} model={MODEL_NAME}")
+        print(
+            f"[STEP] step=0 action={{}} reward=0.00 done=true "
+            f"error=Local env unavailable: {exc}",
+            file=sys.stderr,
+        )
+        print(f"[END] success=false steps=0 score=0.00 rewards=")
+        return 0.0
+
     task_name = TASK_NAMES.get(task_id, f"task-{task_id}")
 
     env = EnvClass(task_id=task_id, seed=42)
@@ -280,89 +293,130 @@ def run_task_local(client: OpenAI, task_id: int) -> float:
     return score
 
 
-def run_task_http(client: OpenAI, env_url: str, task_id: int) -> float:
-    """Run one task via HTTP with mandatory [START]/[STEP]/[END] output."""
+def run_task_ws(client: OpenAI, env_url: str, task_id: int) -> float:
+    """Run one task via WebSocket (stateful session) with mandatory [START]/[STEP]/[END] output."""
+    try:
+        from client import SocialMediaOptimizerClient
+        from models import SocialAction as WSSocialAction
+    except ImportError as exc:
+        # WebSocket client unavailable — fall back to local execution
+        return run_task_local(client, task_id)
+
     task_name = TASK_NAMES.get(task_id, f"task-{task_id}")
-
-    resp = requests.post(
-        f"{env_url}/reset",
-        json={"seed": 42, "task_id": task_id},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    payload = resp.json()
-    obs = payload.get("observation", payload)
-
-    n_brands = len(obs.get("brands", []))
-    max_steps = obs.get("max_steps", 7)
-
-    # [START]
-    print(f"[START] task={task_name} env={ENV_NAME} model={MODEL_NAME}")
-
     rewards: List[float] = []
     step_num = 0
     success = False
     score = 0.0
 
-    try:
-        for step in range(max_steps):
-            step_num = step + 1
-            obs_summary = json.dumps(obs, indent=2)[:2400]
-            user_content = f"Step {step_num}/{max_steps}. Current observation:\n{obs_summary}"
+    async def _run() -> None:
+        nonlocal step_num, success, score, rewards
 
-            messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ]
+        try:
+            async with SocialMediaOptimizerClient(base_url=env_url) as env:
+                try:
+                    result = await env.reset(seed=42, task_id=task_id)
+                except Exception as exc:
+                    print(f"[START] task={task_name} env={ENV_NAME} model={MODEL_NAME}")
+                    print(
+                        f"[STEP] step=0 action={{}} reward=0.00 done=true "
+                        f"error=Reset failed: {exc}",
+                        file=sys.stderr,
+                    )
+                    print(f"[END] success=false steps=0 score=0.00 rewards=")
+                    return
 
-            response_text = _completion(client, messages)
+                obs = result.observation
+                n_brands = len(obs.brands)
+                max_steps = obs.max_steps
 
-            action = parse_action(response_text, task_id, n_brands)
+                print(f"[START] task={task_name} env={ENV_NAME} model={MODEL_NAME}")
 
-            resp = requests.post(f"{env_url}/step", json={"action": action}, timeout=30)
-            resp.raise_for_status()
-            result = resp.json()
-            obs = result.get("observation", result)
-            reward = result.get("reward", obs.get("reward", 0.0))
-            if reward is None:
-                reward = 0.0
-            rewards.append(reward)
-            done = result.get("done", obs.get("done", False))
-            error = obs.get("last_action_error")
+                try:
+                    for step in range(max_steps):
+                        step_num = step + 1
+                        obs_summary = json.dumps(obs.model_dump(), indent=2)[:2400]
+                        user_content = (
+                            f"Step {step_num}/{max_steps}. Current observation:\n{obs_summary}"
+                        )
 
-            # [STEP]
-            error_str = error if error else "null"
-            done_str = "true" if done else "false"
+                        messages = [
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": user_content},
+                        ]
+
+                        try:
+                            response_text = _completion(client, messages)
+                        except Exception as exc:
+                            response_text = ""
+
+                        action_dict = parse_action(response_text, task_id, n_brands)
+
+                        result = await env.step(WSSocialAction(**action_dict))
+                        obs = result.observation
+                        reward = obs.reward if obs.reward is not None else 0.0
+                        rewards.append(reward)
+                        done = obs.done
+                        error = obs.last_action_error
+
+                        error_str = error if error else "null"
+                        done_str = "true" if done else "false"
+                        print(
+                            f"[STEP] step={step_num} "
+                            f"action={_action_str(action_dict)} "
+                            f"reward={reward:.2f} "
+                            f"done={done_str} "
+                            f"error={error_str}"
+                        )
+
+                        if done:
+                            # Get grader_score from server state
+                            try:
+                                state = await env.state()
+                                score = state.grader_score
+                            except Exception:
+                                score = obs.metadata.get("grader_score", 0.0)
+                            success = True
+                            break
+
+                    if not success:
+                        try:
+                            state = await env.state()
+                            score = state.grader_score
+                        except Exception:
+                            score = obs.metadata.get("grader_score", 0.0)
+                        success = score > 0.0
+
+                except Exception as exc:
+                    print(
+                        f"[STEP] step={step_num} action={{}} reward=0.00 done=true error={exc}",
+                        file=sys.stderr,
+                    )
+                    success = False
+
+        except Exception as exc:
+            print(f"[START] task={task_name} env={ENV_NAME} model={MODEL_NAME}")
             print(
-                f"[STEP] step={step_num} "
-                f"action={_action_str(action)} "
-                f"reward={reward:.2f} "
-                f"done={done_str} "
-                f"error={error_str}"
+                f"[STEP] step=0 action={{}} reward=0.00 done=true "
+                f"error=WebSocket connection failed: {exc}",
+                file=sys.stderr,
             )
+            print(f"[END] success=false steps=0 score=0.00 rewards=")
+            return
 
-            if done:
-                score = obs.get("metadata", {}).get("grader_score", 0.0)
-                success = True
-                break
+        rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+        success_str = "true" if success else "false"
+        print(
+            f"[END] success={success_str} "
+            f"steps={step_num} "
+            f"score={score:.2f} "
+            f"rewards={rewards_str}"
+        )
 
-        if not success:
-            score = obs.get("metadata", {}).get("grader_score", 0.0)
-            success = score > 0.0
-
-    except Exception as exc:
-        print(f"[STEP] step={step_num} action={{}} reward=0.00 done=true error={exc}", file=sys.stderr)
-        success = False
-
-    # [END]
-    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    success_str = "true" if success else "false"
-    print(
-        f"[END] success={success_str} "
-        f"steps={step_num} "
-        f"score={score:.2f} "
-        f"rewards={rewards_str}"
-    )
+    try:
+        asyncio.run(_run())
+    except RuntimeError:
+        # Already-running event loop (e.g. Jupyter) — use local fallback
+        return run_task_local(client, task_id)
 
     return score
 
@@ -381,13 +435,22 @@ def main() -> None:
         raise RuntimeError(f"Missing mandatory env vars: {', '.join(missing)}")
 
     llm_client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
-    use_http = _check_server(ENV_BASE_URL)
+    use_ws = _check_server(ENV_BASE_URL)
 
     for task_id in (1, 2, 3):
-        if use_http:
-            run_task_http(llm_client, ENV_BASE_URL, task_id)
-        else:
-            run_task_local(llm_client, task_id)
+        try:
+            if use_ws:
+                run_task_ws(llm_client, ENV_BASE_URL, task_id)
+            else:
+                run_task_local(llm_client, task_id)
+        except Exception as exc:
+            task_name = TASK_NAMES.get(task_id, f"task-{task_id}")
+            print(f"[START] task={task_name} env={ENV_NAME} model={MODEL_NAME}")
+            print(
+                f"[STEP] step=0 action={{}} reward=0.00 done=true error={exc}",
+                file=sys.stderr,
+            )
+            print(f"[END] success=false steps=0 score=0.00 rewards=")
 
 
 if __name__ == "__main__":

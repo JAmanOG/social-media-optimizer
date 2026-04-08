@@ -34,6 +34,11 @@ except ImportError:
         generate_brands,
     )
 
+try:
+    from openenv.core.env_server.types import EnvironmentMetadata
+except ImportError:
+    EnvironmentMetadata = None  # type: ignore[assignment,misc]
+
 
 TASK_CONFIG = {
     1: {
@@ -73,6 +78,22 @@ class SocialMediaOptimizerEnv(Environment):
     """
 
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
+
+    def get_metadata(self):  # type: ignore[override]
+        """Return human-readable metadata for this environment."""
+        if EnvironmentMetadata is None:
+            return super().get_metadata()
+        return EnvironmentMetadata(
+            name="Social Media Optimizer",
+            description=(
+                "Multi-brand social media agency RL environment. "
+                "The agent acts as a digital marketing strategist, selecting which brand to post for, "
+                "what content type to publish, when to schedule it, and (in Task 3) how to allocate "
+                "paid ad budgets — optimizing engagement, conversions, and portfolio coverage over "
+                "a multi-step episode."
+            ),
+            version="1.0.0",
+        )
 
     def __init__(self, task_id: int = 1, seed: Optional[int] = None):
         super().__init__()
@@ -656,6 +677,7 @@ class SocialMediaOptimizerEnv(Environment):
             engagement_log=self._engagement_log.copy(),
             total_policy_violations=self._total_policy_violations,
             total_conversions=round(self._total_conversions, 4),
+            grader_score=round(self._compute_grader_score(), 4),
         )
 
     def _market_trend_for_step(self, step: int) -> float:

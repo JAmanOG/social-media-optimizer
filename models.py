@@ -134,3 +134,4 @@ class SocialState(State):
     engagement_log: List[Dict[str, Any]] = Field(default_factory=list)
     total_policy_violations: int = 0
     total_conversions: float = 0.0
+    grader_score: float = 0.0
